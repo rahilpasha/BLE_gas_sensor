@@ -36,17 +36,37 @@
 #include <zephyr/logging/log.h>
 
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/spi.h>
 
-// GPIO Pins
-#define A0_PIN 18
+// MUX Pins
+#define A0_PIN 20
 #define A1_PIN 3
 #define A2_PIN 10
 #define A3_PIN 5
 #define EN_PIN 8
 
+// SPI Chip Select Pins
+#define DAC_CS_PIN 6
+#define ADC_CS_PIN 4
+
 // Get GPIO device
 #define GPIO_NODE DT_NODELABEL(gpio0)
 static const struct device *gpio_dev = DEVICE_DT_GET(GPIO_NODE);
+
+// Get SPI Device
+#define SPI_NODE DT_NODELABEL(spi1)
+static const struct device *spi_dev = DEVICE_DT_GET(SPI_NODE);
+
+// SPI configuration for DAC (Mode 2: CPOL=1, CPHA=0)
+static struct spi_config dac_spi_cfg = {
+    .frequency = 250000,  // 8 MHz
+    .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER | SPI_MODE_CPOL,  // Mode 2: CPOL=1, CPHA=0
+};
+
+static uint8_t m_tx_dac_use_internal_ref[] = {0b00111000, 0b00000000, 0b00000001};
+static uint8_t m_tx_dac_set_500mV[] = {0b00011000, 0b00010011, 0b01100101};
+static const uint8_t m_length_dac = 3;
+
 
 #define LOG_MODULE_NAME peripheral_uart
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
@@ -651,14 +671,50 @@ static int gpio_init(void)
         return err;
     }
     
-    err = gpio_pin_configure(gpio_dev, EN_PIN, GPIO_OUTPUT_INACTIVE);
+    err = gpio_pin_configure(gpio_dev, EN_PIN, GPIO_OUTPUT_ACTIVE);
     if (err) {
         LOG_ERR("Failed to configure EN pin: %d", err);
+        return err;
+    }
+
+	err = gpio_pin_configure(gpio_dev, DAC_CS_PIN, GPIO_OUTPUT_ACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure DAC CS pin: %d", err);
+        return err;
+    }
+
+	err = gpio_pin_configure(gpio_dev, ADC_CS_PIN, GPIO_OUTPUT_ACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure ADC CS pin: %d", err);
         return err;
     }
     
     LOG_INF("GPIO initialized successfully");
     return 0;
+}
+
+static int dac_write(uint8_t *data, size_t len)
+{
+    struct spi_buf tx_buf = {
+        .buf = data,
+        .len = len
+    };
+    struct spi_buf_set tx = {
+        .buffers = &tx_buf,
+        .count = 1
+    };
+
+    gpio_pin_set(gpio_dev, DAC_CS_PIN, 0);
+	k_busy_wait(1);
+    int err = spi_write(spi_dev, &dac_spi_cfg, &tx);
+	k_busy_wait(1);
+	gpio_pin_set(gpio_dev, DAC_CS_PIN, 1);
+
+	if (err) {
+        LOG_ERR("DAC SPI write failed: %d", err);
+    }
+	return err;
+
 }
 
 static void set_mux_channel(uint8_t channel)
@@ -681,6 +737,17 @@ int main(void)
         LOG_ERR("Failed to initialize GPIO: %d", err);
         error();
     }
+
+	if (!device_is_ready(spi_dev)) {
+        LOG_ERR("SPI device not ready");
+        return -ENODEV;
+    }
+
+	// Initialize DAC with internal reference to 0.5V
+	dac_write(m_tx_dac_use_internal_ref, m_length_dac);
+	k_msleep(5);
+	dac_write(m_tx_dac_set_500mV, m_length_dac);
+	LOG_INF("DAC initialized successfully");
 
 	// err = uart_init();
 	// if (err) {
@@ -725,6 +792,7 @@ int main(void)
 
 	for (;;) {
 		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+		set_mux_channel(blink_status % 16);
 		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
 	}
 }
@@ -783,7 +851,6 @@ void sensor_thread(void)
     
     for (;;) {
         if (current_conn) {
-			set_mux_channel(counter % 16);
 
             char sensor_data[50];
             

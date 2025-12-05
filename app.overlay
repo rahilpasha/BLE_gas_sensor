@@ -12,10 +12,12 @@
 
 	zephyr,user {
 		EN-gpios = <&gpio0 8 0>;
-		A0-gpios = <&gpio0 18 0>;
+		A0-gpios = <&gpio0 20 0>;
 		A1-gpios = <&gpio0 3 0>;
 		A2-gpios = <&gpio0 10 0>;
 		A3-gpios = <&gpio0 5 0>;
+		DAC_CS-gpios = <&gpio0 6 0>;
+		ADC_CS-gpios = <&gpio0 4 0>;
 		status = "okay";
 	};
 };
@@ -27,4 +29,19 @@
 
 &uicr {
     nfct-pins-as-gpios;
+};
+
+&spi1_default {
+	group1 {
+		psels = <NRF_PSEL(SPIM_MOSI, 0, 0)>, <NRF_PSEL(SPIM_MISO, 0, 28)>;
+	};
+
+	group2 {
+		psels = <NRF_PSEL(SPIM_SCK, 0, 7)>;
+		bias-pull-up;
+	};
+};
+
+&led1 {
+	gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
 };

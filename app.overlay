@@ -8,4 +8,23 @@
 	chosen {
 		nordic,nus-uart = &uart0;
 	};
+
+
+	zephyr,user {
+		EN-gpios = <&gpio0 8 0>;
+		A0-gpios = <&gpio0 18 0>;
+		A1-gpios = <&gpio0 3 0>;
+		A2-gpios = <&gpio0 10 0>;
+		A3-gpios = <&gpio0 5 0>;
+		status = "okay";
+	};
+};
+
+/* Disable UART0 to free up pins */
+&uart0 {
+    status = "disabled";
+};
+
+&uicr {
+    nfct-pins-as-gpios;
 };

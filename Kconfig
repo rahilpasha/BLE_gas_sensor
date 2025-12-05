@@ -8,6 +8,12 @@ source "Kconfig.zephyr"
 
 menu "Nordic UART BLE GATT service sample"
 
+config CONFIG_NFCT_PINS_AS_GPIOS
+	bool "Configure NFC pins as GPIOs"
+	default y
+	help
+	  "Configure NFC pins as GPIOs to enable A2 MUX Control Pin."
+
 config BT_NUS_THREAD_STACK_SIZE
 	int "Thread stack size"
 	default 1024

@@ -54,13 +54,19 @@
 static const struct device *gpio_dev = DEVICE_DT_GET(GPIO_NODE);
 
 // Get SPI Device
-#define SPI_NODE DT_NODELABEL(spi1)
+#define SPI_NODE DT_NODELABEL(spi0)  // Changed from spi1 to spi0
 static const struct device *spi_dev = DEVICE_DT_GET(SPI_NODE);
 
 // SPI configuration for DAC (Mode 2: CPOL=1, CPHA=0)
 static struct spi_config dac_spi_cfg = {
-    .frequency = 250000,  // 8 MHz
-    .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER | SPI_MODE_CPOL,  // Mode 2: CPOL=1, CPHA=0
+    .frequency = 250000,  // 250 kHz to match Segger SDK
+    .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER | SPI_MODE_CPOL,  // Mode 2
+};
+
+// SPI configuration for ADC (Mode 3: CPOL=1, CPHA=1) 
+static struct spi_config adc_spi_cfg = {
+    .frequency = 250000,  // 250 kHz
+    .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA,  // Mode 3
 };
 
 static uint8_t m_tx_dac_use_internal_ref[] = {0b00111000, 0b00000000, 0b00000001};
@@ -77,10 +83,8 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN	(sizeof(DEVICE_NAME) - 1)
 
-#define RUN_STATUS_LED DK_LED1
+#define RUN_STATUS_LED 9
 #define RUN_LED_BLINK_INTERVAL 1000
-
-#define CON_STATUS_LED DK_LED2
 
 #define KEY_PASSKEY_ACCEPT DK_BTN1_MSK
 #define KEY_PASSKEY_REJECT DK_BTN2_MSK
@@ -398,8 +402,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	LOG_INF("Connected %s", addr);
 
 	current_conn = bt_conn_ref(conn);
-
-	dk_set_led_on(CON_STATUS_LED);
+    
+	gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -418,7 +422,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	if (current_conn) {
 		bt_conn_unref(current_conn);
 		current_conn = NULL;
-		dk_set_led_off(CON_STATUS_LED);
+		gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
 	}
 }
 
@@ -688,8 +692,14 @@ static int gpio_init(void)
         LOG_ERR("Failed to configure ADC CS pin: %d", err);
         return err;
     }
+
+	err = gpio_pin_configure(gpio_dev, RUN_STATUS_LED, GPIO_OUTPUT_INACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure LED pin: %d", err);
+        return err;
+    }
     
-    LOG_INF("GPIO initialized successfully");
+    LOG_INF("GPIO initialized successfully!!");
     return 0;
 }
 
@@ -738,9 +748,11 @@ int main(void)
         error();
     }
 
+	k_msleep(5);
+
 	if (!device_is_ready(spi_dev)) {
         LOG_ERR("SPI device not ready");
-        return -ENODEV;
+		error();
     }
 
 	// Initialize DAC with internal reference to 0.5V
@@ -791,7 +803,8 @@ int main(void)
 	advertising_start();
 
 	for (;;) {
-		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+		LOG_INF("Count: %d", blink_status);
+    	gpio_pin_set(gpio_dev, RUN_STATUS_LED, (++blink_status) % 2);
 		set_mux_channel(blink_status % 16);
 		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
 	}
@@ -855,15 +868,15 @@ void sensor_thread(void)
             char sensor_data[50];
             
             // Simulate gas sensor reading (replace with actual sensor code)
-            int gas_value = 100 + (counter % 900);  // Mock data: 100-999
+            int adc_value = 100 + (counter % 900);  // Mock data: 100-999
             
             int len = snprintf(sensor_data, sizeof(sensor_data), 
-                             "Gas: %d ppm\r\n", gas_value);
+                             "adc: %d\r\n", adc_value);
             
             if (bt_nus_send(NULL, sensor_data, len)) {
                 LOG_WRN("Failed to send sensor data");
             } else {
-                LOG_INF("Sent: Gas: %d ppm", gas_value);
+                LOG_INF("Sent: adc: %d", adc_value);
             }
             
             counter++;

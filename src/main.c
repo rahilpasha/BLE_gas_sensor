@@ -38,6 +38,8 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 
+#define BREADBOARD 1 // Set 1 for breadboard, 0 for PCB
+
 // MUX Pins
 #define A0_PIN 20
 #define A1_PIN 3
@@ -69,8 +71,15 @@ static struct spi_config adc_spi_cfg = {
     .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA,  // Mode 3
 };
 
+#if !BREADBOARD
 static uint8_t m_tx_dac_use_internal_ref[] = {0b00111000, 0b00000000, 0b00000001};
 static uint8_t m_tx_dac_set_500mV[] = {0b00011000, 0b00010011, 0b01100101};
+#endif
+
+#if BREADBOARD
+static uint8_t m_tx_dac_set_500mV_breadboard[] = {0b00000000, 0b00011001, 0b10011010};
+#endif
+
 static const uint8_t m_length_dac = 3;
 
 
@@ -735,6 +744,147 @@ static void set_mux_channel(uint8_t channel)
     gpio_pin_set(gpio_dev, A3_PIN, (channel >> 3) & 0x01);
 }
 
+// External ADC Functions
+
+static int ad7789_reset()
+{
+    uint8_t reset_cmd[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+	struct spi_buf tx_buf = {
+        .buf = reset_cmd,
+        .len = 5
+    };
+    struct spi_buf_set tx = {
+        .buffers = &tx_buf,
+        .count = 1
+    };
+    
+    gpio_pin_set(gpio_dev, ADC_CS_PIN, 0);
+	k_busy_wait(1);
+    int err = spi_write(spi_dev, &adc_spi_cfg, &tx);
+	k_busy_wait(1);
+	gpio_pin_set(gpio_dev, ADC_CS_PIN, 1);
+
+	if (err) {
+        LOG_ERR("AD7789 reset failed: %d", err);
+    }
+	return err;
+}
+
+uint8_t ad7789_read_status()
+{
+    uint8_t tx_data[2] = {0x08, 0x00};
+    uint8_t rx_data[2] = {0};
+
+	struct spi_buf tx_buf = {
+        .buf = tx_data,
+        .len = 2
+    };
+    struct spi_buf_set tx = {
+        .buffers = &tx_buf,
+        .count = 1
+    };
+
+	struct spi_buf rx_buf = {
+        .buf = rx_data,
+        .len = 2
+    };
+    struct spi_buf_set rx = {
+        .buffers = &rx_buf,
+        .count = 1
+    };
+    
+	gpio_pin_set(gpio_dev, ADC_CS_PIN, 0);
+	k_busy_wait(1);
+    int err = spi_transceive(spi_dev, &adc_spi_cfg, &tx, &rx);
+	k_busy_wait(1);
+	gpio_pin_set(gpio_dev, ADC_CS_PIN, 1);
+	k_busy_wait(10);
+
+	if (err) {
+        LOG_ERR("AD7789 Read Status Error: %d", err);
+    }
+    
+    return rx_data[1];
+}
+
+bool ad7789_wait_for_data(uint32_t timeout_ms)
+{
+    uint32_t elapsed = 0;
+    uint8_t status;
+    
+    do {
+        status = ad7789_read_status();
+        
+        // Check if RDY bit (bit 7) is cleared
+        if ((status & 0x80) == 0) {
+            // Data is ready
+            if (status & 0x40) {
+                LOG_WRN("Data ready but ERR flag set! Status: 0x%02X", status);
+            }
+            return true;
+        }
+        
+        k_busy_wait(10);
+        elapsed += 10;
+        
+        if (elapsed >= timeout_ms) {
+            LOG_WRN("Timeout waiting for data. Status: 0x%02X", status);
+            return false;
+        }
+    } while (1);
+}
+
+uint32_t ad7789_read_data()
+{
+    // Wait for data to be ready
+    if (!ad7789_wait_for_data(200)) {
+        LOG_ERR("No data ready!");
+        return 0xFFFFFFFF;
+    }
+    
+    // Read data register in one transaction
+    uint8_t tx_data[4] = {0x38, 0x00, 0x00, 0x00}; // Read data register
+    uint8_t rx_data[4] = {0};
+
+	struct spi_buf tx_buf = {
+        .buf = tx_data,
+        .len = 4
+    };
+    struct spi_buf_set tx = {
+        .buffers = &tx_buf,
+        .count = 1
+    };
+
+	struct spi_buf rx_buf = {
+        .buf = rx_data,
+        .len = 4
+    };
+    struct spi_buf_set rx = {
+        .buffers = &rx_buf,
+        .count = 1
+    };
+
+	gpio_pin_set(gpio_dev, ADC_CS_PIN, 0);
+	k_busy_wait(1);
+    int err = spi_transceive(spi_dev, &adc_spi_cfg, &tx, &rx);
+	k_busy_wait(1);
+	gpio_pin_set(gpio_dev, ADC_CS_PIN, 1);
+	k_busy_wait(10);
+
+	if (err) {
+        LOG_ERR("AD7789 Read Status Error: %d", err);
+    }
+    
+    // Combine bytes
+    uint32_t adc_value = ((uint32_t)rx_data[1] << 16) | 
+                         ((uint32_t)rx_data[2] << 8) | 
+                         rx_data[3];
+    
+    return adc_value;
+}
+
+
 int main(void)
 {
 	int blink_status = 0;
@@ -755,11 +905,22 @@ int main(void)
 		error();
     }
 
+	k_msleep(5);
 	// Initialize DAC with internal reference to 0.5V
+	#if !BREADBOARD
 	dac_write(m_tx_dac_use_internal_ref, m_length_dac);
 	k_msleep(5);
 	dac_write(m_tx_dac_set_500mV, m_length_dac);
+	#endif
+
+	#if BREADBOARD
+	dac_write(m_tx_dac_set_500mV_breadboard, m_length_dac);
+	#endif
 	LOG_INF("DAC initialized successfully");
+
+
+	ad7789_reset();
+	LOG_INF("ADC Reset Successful");
 
 	// err = uart_init();
 	// if (err) {
@@ -868,15 +1029,15 @@ void sensor_thread(void)
             char sensor_data[50];
             
             // Simulate gas sensor reading (replace with actual sensor code)
-            int adc_value = 100 + (counter % 900);  // Mock data: 100-999
+            int adc_value = ad7789_read_data();
             
             int len = snprintf(sensor_data, sizeof(sensor_data), 
-                             "adc: %d\r\n", adc_value);
+                             "%d\r\n", adc_value);
             
             if (bt_nus_send(NULL, sensor_data, len)) {
                 LOG_WRN("Failed to send sensor data");
             } else {
-                LOG_INF("Sent: adc: %d", adc_value);
+                LOG_INF("Sent ADC value: %d", adc_value);
             }
             
             counter++;

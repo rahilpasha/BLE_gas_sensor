@@ -38,7 +38,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 
-#define BREADBOARD 1 // Set 1 for breadboard, 0 for PCB
+#define BREADBOARD 0 // Set 1 for breadboard, 0 for PCB
 
 // MUX Pins
 #define A0_PIN 20

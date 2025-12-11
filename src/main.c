@@ -1129,17 +1129,17 @@ void sensor_thread(void)
 
 			// Add timestamp (4 bytes)
 			uint32_t timestamp = get_timestamp_ms();
-			packet_data[1] = (unsigned char)((timestamp >> 24) & 0xFF);
-			packet_data[2] = (unsigned char)((timestamp >> 16) & 0xFF);
-			packet_data[3] = (unsigned char)((timestamp >> 8) & 0xFF);
-			packet_data[4] = (unsigned char)(timestamp & 0xFF);
+			packet_data[1] = (unsigned char)(timestamp & 0xFF);
+			packet_data[2] = (unsigned char)((timestamp >> 8) & 0xFF);
+			packet_data[3] = (unsigned char)((timestamp >> 16) & 0xFF);
+			packet_data[4] = (unsigned char)((timestamp >> 24) & 0xFF);
 
 			packet_data[5] = (uint8_t)channel; // Channel Number
 
 			// Add sensor data as 3 bytes
-			packet_data[6] = (unsigned char)((sensor_data >> 16) & 0xFF);
+			packet_data[6] = (unsigned char)(sensor_data & 0xFF);
     		packet_data[7] = (unsigned char)((sensor_data >> 8) & 0xFF);
-    		packet_data[8] = (unsigned char)(sensor_data & 0xFF);
+			packet_data[8] = (unsigned char)((sensor_data >> 16) & 0xFF);
 
 			// If connected, send data over BLE
 			if (current_conn) {

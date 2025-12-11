@@ -1012,6 +1012,8 @@ int main(void)
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
 
+	gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
+
 	 // Wait for BLE to initialize
     k_sem_take(&ble_init_ok, K_FOREVER);
 

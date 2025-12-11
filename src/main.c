@@ -23,6 +23,21 @@
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci.h>
 
+#ifdef BT_UUID_NUS_VAL
+#undef BT_UUID_NUS_VAL
+#endif
+
+#ifdef BT_UUID_NUS_TX_VAL
+#undef BT_UUID_NUS_TX_VAL
+#endif
+
+// Define custom UUIDs
+
+#define BT_UUID_NUS_VAL \
+    BT_UUID_128_ENCODE(0x0000AAAA, 0x1212, 0xEFDE, 0x1523, 0x785FEF13D123)
+
+#define BT_UUID_NUS_TX_VAL 0x1111
+
 #include <bluetooth/services/nus.h>
 
 #include <dk_buttons_and_leds.h>
@@ -37,8 +52,13 @@
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/counter.h>
 
 #define BREADBOARD 0 // Set 1 for breadboard, 0 for PCB
+
+// Get RTC Device
+#define RTC_NODE DT_NODELABEL(rtc0)
+static const struct device *rtc_dev = DEVICE_DT_GET(RTC_NODE);
 
 // MUX Pins
 #define A0_PIN 20
@@ -82,6 +102,7 @@ static uint8_t m_tx_dac_set_500mV_breadboard[] = {0b00000000, 0b00011001, 0b1001
 
 static const uint8_t m_length_dac = 3;
 
+#define MUX_SETTLE_DELAY K_MSEC(125)  // 125ms/channel x 16 channels = 2s total
 
 #define LOG_MODULE_NAME peripheral_uart
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
@@ -870,7 +891,7 @@ uint32_t ad7789_read_data()
     int err = spi_transceive(spi_dev, &adc_spi_cfg, &tx, &rx);
 	k_busy_wait(1);
 	gpio_pin_set(gpio_dev, ADC_CS_PIN, 1);
-	k_busy_wait(10);
+	k_busy_wait(1);
 
 	if (err) {
         LOG_ERR("AD7789 Read Status Error: %d", err);
@@ -884,10 +905,26 @@ uint32_t ad7789_read_data()
     return adc_value;
 }
 
+// Get timestamp in milliseconds since startup
+uint32_t get_timestamp_ms(void)
+{
+    uint32_t ticks;
+    uint32_t freq;
+    
+    if (counter_get_value(rtc_dev, &ticks) != 0) {
+        LOG_ERR("Failed to read RTC counter");
+        return 0;
+    }
+    
+    freq = counter_get_frequency(rtc_dev);
+    
+    // Convert ticks to milliseconds
+    // RTC typically runs at 32.768 kHz, so freq = 32768
+    return ((uint32_t)ticks * 1000UL) / freq;
+}
 
 int main(void)
 {
-	int blink_status = 0;
 	int err = 0;
 
 	configure_gpio();
@@ -897,6 +934,18 @@ int main(void)
         LOG_ERR("Failed to initialize GPIO: %d", err);
         error();
     }
+
+	k_msleep(5);
+
+    // Initialize RTC
+    if (!device_is_ready(rtc_dev)) {
+        LOG_ERR("RTC device not ready");
+        error();
+    }
+
+    // Start the counter
+    counter_start(rtc_dev);
+    LOG_INF("RTC initialized and started");
 
 	k_msleep(5);
 
@@ -963,11 +1012,54 @@ int main(void)
 	k_work_init(&adv_work, adv_work_handler);
 	advertising_start();
 
+	 // Wait for BLE to initialize
+    k_sem_take(&ble_init_ok, K_FOREVER);
+
+	// Create packet data string
+	char packet_data[9];
+	packet_data[0] = 0x05;
+
+	uint32_t timestamp;
+	int channel;
+	uint32_t sensor_data;
+
 	for (;;) {
-		LOG_INF("Count: %d", blink_status);
-    	gpio_pin_set(gpio_dev, RUN_STATUS_LED, (++blink_status) % 2);
-		set_mux_channel(blink_status % 16);
-		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
+		
+		// Loop through all 16 channels
+		for (channel = 0; channel < 16; channel++) {
+			set_mux_channel(channel);
+			k_sleep(MUX_SETTLE_DELAY);
+			sensor_data = ad7789_read_data();
+
+			// Add timestamp (4 bytes)
+			timestamp = get_timestamp_ms();
+			packet_data[1] = (unsigned char)((timestamp >> 24) & 0xFF);
+			packet_data[2] = (unsigned char)((timestamp >> 16) & 0xFF);
+			packet_data[3] = (unsigned char)((timestamp >> 8) & 0xFF);
+			packet_data[4] = (unsigned char)(timestamp & 0xFF);
+
+			packet_data[5] = (uint8_t)channel; // Channel Number
+
+			// Add sensor data as 3 bytes
+			packet_data[6] = (unsigned char)((sensor_data >> 16) & 0xFF);
+    		packet_data[7] = (unsigned char)((sensor_data >> 8) & 0xFF);
+    		packet_data[8] = (unsigned char)(sensor_data & 0xFF);
+
+			// If connected, send data over BLE
+			if (current_conn) {
+
+				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
+				
+				if (bt_nus_send(NULL, packet_data, sizeof(packet_data))) {
+					LOG_WRN("Failed to send sensor data");
+				} else {
+					LOG_INF("Sent Data: %u, %d, %u", timestamp, channel, sensor_data);
+				}
+
+				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
+			}
+		}
+		
 	}
 }
 
@@ -1013,40 +1105,101 @@ int main(void)
 
 
 // Add this near the top with other defines
-#define SENSOR_READ_INTERVAL K_MSEC(2000)  // Send every 2 seconds
 
 // Add this function before main()
 void sensor_thread(void)
 {
     /* Wait for BLE to initialize */
     k_sem_take(&ble_init_ok, K_FOREVER);
-    
-    uint32_t counter = 0;
-    
-    for (;;) {
-        if (current_conn) {
-
-            char sensor_data[50];
-            
-            // Simulate gas sensor reading (replace with actual sensor code)
-            int adc_value = ad7789_read_data();
-            
-            int len = snprintf(sensor_data, sizeof(sensor_data), 
-                             "%d\r\n", adc_value);
-            
-            if (bt_nus_send(NULL, sensor_data, len)) {
-                LOG_WRN("Failed to send sensor data");
-            } else {
-                LOG_INF("Sent ADC value: %d", adc_value);
-            }
-            
-            counter++;
-        }
         
-        k_sleep(SENSOR_READ_INTERVAL);
+    for (;;) {
+
+		// Loop through all 16 channels
+		uint32_t sensor_data;
+		for (int channel = 0; channel < 16; channel++) {
+			set_mux_channel(channel);
+			k_sleep(MUX_SETTLE_DELAY);
+			sensor_data = ad7789_read_data();
+
+			// Create packet data string
+			char packet_data[9];
+			packet_data[0] = 0x05;
+
+			// Add timestamp (4 bytes)
+			uint32_t timestamp = get_timestamp_ms();
+			packet_data[1] = (unsigned char)((timestamp >> 24) & 0xFF);
+			packet_data[2] = (unsigned char)((timestamp >> 16) & 0xFF);
+			packet_data[3] = (unsigned char)((timestamp >> 8) & 0xFF);
+			packet_data[4] = (unsigned char)(timestamp & 0xFF);
+
+			packet_data[5] = (uint8_t)channel; // Channel Number
+
+			// Add sensor data as 3 bytes
+			packet_data[6] = (unsigned char)((sensor_data >> 16) & 0xFF);
+    		packet_data[7] = (unsigned char)((sensor_data >> 8) & 0xFF);
+    		packet_data[8] = (unsigned char)(sensor_data & 0xFF);
+
+			// If connected, send data over BLE
+			if (current_conn) {
+
+				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
+				
+				if (bt_nus_send(NULL, packet_data, sizeof(packet_data))) {
+					LOG_WRN("Failed to send sensor data");
+				} else {
+					LOG_INF("Sent Data: %u, %d, %u", timestamp, channel, sensor_data);
+				}
+
+				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
+			}
+		}
+
+		// // Send timestamp first
+		// char timestamp_data[20];
+		// sprintf(timestamp_data, "T:%llu", (unsigned long long)timestamp);
+		// if (current_conn) {
+
+		// 	gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
+			
+		// 	if (bt_nus_send(NULL, timestamp_data, sizeof(timestamp_data))) {
+		// 		LOG_WRN("Failed to send sensor data");
+		// 	} else {
+		// 		LOG_INF("Sent Data: %s", timestamp_data);
+		// 	}
+
+		// 	gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
+		// 	// Clear packet data for next packet
+			
+		// }
+
+		// // Send in 2 packets of 8 channels each
+		// char packet_data[20];
+		// for (int packet = 0; packet < 2; packet++) {
+		// 	packet_data[0] = '\0';
+		// 	// add the raw bytes to the packet data
+		// 	memcpy(packet_data, &sensor_data[packet*8], 16);
+
+		// 	// If connected, send data over BLE
+		// 	if (current_conn) {
+
+		// 		gpio_pin_set(gpio_dev, RUN_STATUS_LED, 1);
+				
+		// 		if (bt_nus_send(NULL, packet_data, sizeof(packet_data))) {
+		// 			LOG_WRN("Failed to send sensor data");
+		// 		} else {
+		// 			LOG_INF("Sent Data: %s", packet_data);
+		// 		}
+
+		// 		gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
+		// 		// Clear packet data for next packet
+		// 		packet_data[0] = '\0';
+				
+		// 	}
+		// }
+
     }
 }
 
 // Add this at the end of the file, after the ble_write_thread definition
-K_THREAD_DEFINE(sensor_thread_id, STACKSIZE, sensor_thread, NULL, NULL,
-                NULL, PRIORITY, 0, 0);
+// K_THREAD_DEFINE(sensor_thread_id, STACKSIZE, sensor_thread, NULL, NULL,
+//                 NULL, PRIORITY, 0, 0);

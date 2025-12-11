@@ -115,3 +115,6 @@
 &i2c1 {
     status = "disabled";
 };
+&rtc0 {
+    status = "okay";
+};

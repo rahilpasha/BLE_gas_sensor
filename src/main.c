@@ -555,7 +555,7 @@ bool ad7789_wait_for_data(uint32_t timeout_ms)
 uint32_t ad7789_read_data()
 {
     // Wait for data to be ready
-    if (!ad7789_wait_for_data(200)) {
+    if (!ad7789_wait_for_data(500)) {
         LOG_ERR("No data ready!");
         return 0xFFFFFFFF;
     }
@@ -599,6 +599,15 @@ uint32_t ad7789_read_data()
                          rx_data[3];
     
     return adc_value;
+}
+
+float convert_voltage(float adc_value)
+{
+	// Bipolar mode: Code = 2^23 × ((VIN / VREF) + 1)
+    // VIN = ((Code / 2^23) - 1) × VREF
+	// VIN+ = VIN + VIN-
+    float normalized = adc_value / 8388608.0f; // 2^23
+    return ((normalized - 1.0f) * 2.715f) + 2.696f; // VREF = 2.719V
 }
 
 // Get timestamp in milliseconds since startup
@@ -699,12 +708,14 @@ int main(void)
     k_sem_take(&ble_init_ok, K_FOREVER);
 
 	// Create packet data string
-	char packet_data[9];
+	char packet_data[10];
 	packet_data[0] = 0x05;
 
 	uint32_t timestamp;
 	int channel;
-	uint32_t sensor_data;
+	uint32_t sensor_data[10];
+	float sensor_voltage;
+	int num_samples = 5;
 
 	for (;;) {
 		
@@ -712,8 +723,18 @@ int main(void)
 		for (channel = 0; channel < 16; channel++) {
 			set_mux_channel(channel);
 			k_sleep(MUX_SETTLE_DELAY);
-			sensor_data = ad7789_read_data();
 
+			int sum = 0;
+
+			// Average 10 samples of the channel
+			for (int sample = 0; sample < num_samples; sample++) {
+				sensor_data[sample] = ad7789_read_data();
+				LOG_INF("ADC read: %d, %u", sample, sensor_data[sample]);
+				sum += sensor_data[sample];
+				k_msleep(60);
+			}
+
+			sensor_voltage = convert_voltage((float)sum / (float)num_samples);
 			// Add timestamp (4 bytes)
 			timestamp = get_timestamp_ms();
 
@@ -721,10 +742,11 @@ int main(void)
 
 			packet_data[5] = (uint8_t)channel; // Channel Number
 
-			// Add sensor data as 3 bytes
-			packet_data[6] = (unsigned char)(sensor_data & 0xFF);
-    		packet_data[7] = (unsigned char)((sensor_data >> 8) & 0xFF);
-			packet_data[8] = (unsigned char)((sensor_data >> 16) & 0xFF);
+			memcpy(&packet_data[6], &sensor_voltage, sizeof(float));
+			// // Add sensor data as 3 bytes
+			// packet_data[6] = (unsigned char)(sensor_data & 0xFF);
+    		// packet_data[7] = (unsigned char)((sensor_data >> 8) & 0xFF);
+			// packet_data[8] = (unsigned char)((sensor_data >> 16) & 0xFF);
 
 			// If connected, send data over BLE
 			if (current_conn) {
@@ -734,7 +756,7 @@ int main(void)
 				if (bt_nus_send(NULL, packet_data, sizeof(packet_data))) {
 					LOG_WRN("Failed to send sensor data");
 				} else {
-					LOG_INF("Sent Data: %u, %d, %u", timestamp, channel, sensor_data);
+					LOG_INF("Sent Data: %u, %d, %f", timestamp, channel, sensor_voltage);
 				}
 
 				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);

@@ -79,7 +79,7 @@ static const struct device *rtc_dev = DEVICE_DT_GET(RTC_NODE);
 static const struct device *gpio_dev = DEVICE_DT_GET(GPIO_NODE);
 
 // Get SPI Device
-#define SPI_NODE DT_NODELABEL(spi0)  // Changed from spi1 to spi0
+#define SPI_NODE DT_NODELABEL(spi0) 
 static const struct device *spi_dev = DEVICE_DT_GET(SPI_NODE);
 
 // SPI configuration for DAC (Mode 2: CPOL=1, CPHA=0)
@@ -105,7 +105,7 @@ static uint8_t m_tx_dac_set_500mV_breadboard[] = {0b00000000, 0b00011001, 0b1001
 
 static const uint8_t m_length_dac = 3;
 
-#define MUX_SETTLE_DELAY K_MSEC(125)  // 125ms/channel x 16 channels = 2s total
+#define MUX_SETTLE_DELAY K_MSEC(125)
 
 #define LOG_MODULE_NAME peripheral_uart
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
@@ -516,7 +516,7 @@ uint8_t ad7789_read_status()
     int err = spi_transceive(spi_dev, &adc_spi_cfg, &tx, &rx);
 	k_busy_wait(1);
 	gpio_pin_set(gpio_dev, ADC_CS_PIN, 1);
-	k_busy_wait(10);
+	k_busy_wait(1);
 
 	if (err) {
         LOG_ERR("AD7789 Read Status Error: %d", err);
@@ -555,7 +555,7 @@ bool ad7789_wait_for_data(uint32_t timeout_ms)
 uint32_t ad7789_read_data()
 {
     // Wait for data to be ready
-    if (!ad7789_wait_for_data(500)) {
+    if (!ad7789_wait_for_data(5000)) {
         LOG_ERR("No data ready!");
         return 0xFFFFFFFF;
     }
@@ -607,7 +607,7 @@ float convert_voltage(float adc_value)
     // VIN = ((Code / 2^23) - 1) × VREF
 	// VIN+ = VIN + VIN-
     float normalized = adc_value / 8388608.0f; // 2^23
-    return ((normalized - 1.0f) * 2.715f) + 2.696f; // VREF = 2.719V
+    return ((normalized - 1.0f) * 2.715f) + 2.696f; // VREF = 2.715V	VIN- = 2.696V
 }
 
 // Get timestamp in milliseconds since startup
@@ -715,7 +715,7 @@ int main(void)
 	int channel;
 	uint32_t sensor_data[10];
 	float sensor_voltage;
-	int num_samples = 5;
+	int num_samples = 3;
 
 	for (;;) {
 		
@@ -726,12 +726,11 @@ int main(void)
 
 			int sum = 0;
 
-			// Average 10 samples of the channel
+			// Average 3 samples of the channel
 			for (int sample = 0; sample < num_samples; sample++) {
 				sensor_data[sample] = ad7789_read_data();
 				LOG_INF("ADC read: %d, %u", sample, sensor_data[sample]);
 				sum += sensor_data[sample];
-				k_msleep(60);
 			}
 
 			sensor_voltage = convert_voltage((float)sum / (float)num_samples);

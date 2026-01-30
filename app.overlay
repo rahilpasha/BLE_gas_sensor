@@ -120,3 +120,7 @@
 
 
 };
+
+&uicr {
+    gpio-as-nreset;
+};

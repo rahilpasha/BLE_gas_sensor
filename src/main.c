@@ -97,6 +97,7 @@ static struct spi_config adc_spi_cfg = {
 #if !BREADBOARD
 static uint8_t m_tx_dac_use_internal_ref[] = {0b00111000, 0b00000000, 0b00000001};
 static uint8_t m_tx_dac_set_500mV[] = {0b00011000, 0b00010011, 0b01100101};
+static uint8_t m_tx_dac_set_1000mV[] = {0b00011000, 0b00100110, 0b11001010};
 #endif
 
 #if BREADBOARD
@@ -607,7 +608,7 @@ float convert_voltage(float adc_value)
     // VIN = ((Code / 2^23) - 1) × VREF
 	// VIN+ = VIN + VIN-
     float normalized = adc_value / 8388608.0f; // 2^23
-    return ((normalized - 1.0f) * 2.715f) + 2.696f; // VREF = 2.715V	VIN- = 2.696V
+    return ((normalized - 1.0f) * 2.717f) + 2.698f; // VREF = 2.717V	VIN- = 2.698V
 }
 
 // Get timestamp in milliseconds since startup
@@ -721,6 +722,11 @@ int main(void)
 		
 		// Loop through all 16 channels
 		for (channel = 0; channel < 16; channel++) {
+
+			if (channel == 10) {
+				dac_write(m_tx_dac_set_1000mV, m_length_dac); // Set Channel 11 bias to 1.0V
+			}
+
 			set_mux_channel(channel);
 			k_sleep(MUX_SETTLE_DELAY);
 
@@ -759,6 +765,10 @@ int main(void)
 				}
 
 				gpio_pin_set(gpio_dev, RUN_STATUS_LED, 0);
+			}
+
+			if (channel == 10) {
+				dac_write(m_tx_dac_set_500mV, m_length_dac); // Return bias to 500mV
 			}
 		}
 		
